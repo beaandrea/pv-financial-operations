@@ -4,6 +4,8 @@ __pycache__/
 
 # Ignore massive data files (you will push the generator script, not the raw data)
 data/*.csv
+*.xlsx
+*.db
 
 # OS generated files
 .DS_Store
