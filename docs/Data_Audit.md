@@ -1,15 +1,11 @@
 # Phase 1: Data Quality Triage & Issue Log
 
-**Project:** Prescott & Vance Financial - Operations Capacity & Throughput Optimizer  
-**Dataset:** 2024-2025 Global Retail Banking Operations Extract (500,000 records)  
-**Objective:** To perform an initial data audit on the raw HRIS and operations extract prior to pipeline engineering, isolating solvable structural issues from unsolvable anomalies.
+**Project:** Prescott & Vance Financial - Operations Capacity Optimizer  
+**Dataset:** 2024-2025 Retail Banking Operations Extract (~500,000 records)  
+**Objective:** To perform an initial data audit on the raw operations extract prior to pipeline engineering, isolating solvable structural issues from unsolvable legacy system anomalies.
 
 ### Executive Summary
-Initial exploratory data analysis using Python (Pandas) revealed a dataset with a 259.4 MB memory footprint, primarily due to timestamps loading as unstructured strings. The data clearly captures a massive 10% open backlog (50,000 unresolved cases). Notable solvable issues include legacy system entity fragmentation (misspelled hubs) and a specific system glitch causing negative processing times. 
-
-**Strategic Analytical Signals:** 
-* **SLA Distortion:** Text corruption artificially distorts SLA metrics. The clean `New York` hub has a 0% SLA breach rate, but the typo `NewYork` shows a 41% breach rate because overwhelmed Manila/London cases were mislabeled. 
-* **YoY Degradation:** Initial grouping confirms Victoria Sterling's hypothesis: Merchant Dispute processing times in overloaded hubs surged by ~24% from 2024 to 2025.
+Audit of 500,000+ raw records revealed three legacy system failures that would have invalidated all hub-level analysis if left unresolved. The most critical: ~25,000 geographic misassignments that required bypassing the corrupted text field entirely and reconstructing hub data from Agent_ID prefixes — a source-of-truth decision that became the foundation of the entire pipeline.
 
 ---
 
@@ -17,9 +13,28 @@ Initial exploratory data analysis using Python (Pandas) revealed a dataset with 
 
 | Table | Column | Issue | Row Count | Magnitude | Solvable? | Resolution Plan |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `raw_pv_operations` | All Timestamps | **Data Type Inefficiency:** Loaded as `object` (string) rather than datetime, inflating memory usage. | 500,000 | High | Yes | Force standardization via Pandas `to_datetime()` to establish uniform ISO formats and enable date math. |
-| `raw_pv_operations` | `Processing_Hub` | **Entity Fragmentation:** Legacy system naming inconsistencies (e.g., 'MNL', 'manila', 'Ph-Manila'). *Strategic Note: This text corruption artificially skews the SLA breach rates of the fragments.* | 25,000 | High | Yes | Implement a Python dictionary mapping to standardize all fragmented text strings into unified Parent Hubs (Manila, London, New York). |
-| `raw_pv_operations` | `Resolution_Timestamp` | **Business Logic Violation:** Negative processing times detected in resolved cases. The resolution timestamp occurs *before* the intake timestamp, indicating a legacy system glitch. | 8,956 | Medium | Yes | Recalculate `Actual_Processing_Days` fresh from clean timestamps `(Resolution_Timestamp - Intake_Timestamp).dt.days`, then **drop** rows where the result is `< 0`. These represent genuine data corruption (1.8% of resolved cases) and dropping them preserves AHT accuracy without meaningful impact on aggregate throughput. |
-| `raw_pv_operations` | `Dispute_Type` | **Missing Core Dimension:** Null values detected in the transaction category field. | 5,000 | Low | Yes | Drop rows. Representing exactly 1.0% of the dataset, dropping preserves aggregate analytical accuracy without forcing artificial 'Unknown' allocations. |
-| `raw_pv_operations` | `Processing_Cost_USD` | **Missing Financial Data:** Cascading nulls caused by the missing `Dispute_Type` inputs above. | 5,000 | Low | Yes | Dropping the null `Dispute_Type` rows will natively resolve these trailing financial nulls. |
-| `raw_pv_operations` | `Actual_Processing_Days` | **Expected Nulls (Backlog):** Nulls present due to open cases lacking a resolution date. | 50,000 | High | No | **Do not drop.** These represent the 10% active backlog. Quarantine these cases when calculating AHT, but include them when calculating total throughput volume. |
+| `raw_operations` | `Processing_Hub` | **Dimension Mismatch / Inconsistent Categorization:** Legacy text fields corrupted geographic placement (e.g., assigning "Manila" agents to "New York"). | ~25,000 | High | Yes | **Established Source of Truth:** Bypassed manual text mapping and engineered a Python pipeline step to extract the true geographic location directly from the `Agent_ID` prefix (`MNL`, `LND`, `NY`). |
+| `raw_operations` | `Dispute_Type` | **Missing Core Dimension:** Null values detected in the primary ticket classification field. | ~5,000 | Low | Yes | Dropped rows. Representing 1% of the 500k dataset, dropping preserves aggregate SLA accuracy without introducing artificial 'Unknown' categories. |
+| `raw_operations` | `Resolution_Timestamp` | **Business Logic Anomaly:** Negative values present where resolution dates occurred *before* intake dates. | ~10,000 | Medium | Yes | Identified as legacy system auto-close errors. Quarantined and filtered out instances where `Actual_Processing_Days < 0` to prevent skewed handling time averages. |
+
+<br>
+
+# Phase 2: Strategic SQL EDA & Business Insights
+
+**Project:** Prescott & Vance Financial - Operations Capacity Optimizer  
+**Dataset:** Cleaned `fact_pv_operations` table (SQLite Database) 
+**Objective:** To execute business-focused EDA using SQL, testing competing stakeholder hypotheses (global understaffing vs. structural resource misallocation).
+
+### Requirements Gathering
+* **Stakeholder Goals:** Evaluate the Compliance Head's theory of universal understaffing against the COO's theory of idle capacity to guide headcount budget strategy. Compliance Head believed the issue was universal understaffing across all dispute types. COO suspected idle capacity in specific teams masked as a staffing shortage. The SQL analysis was designed to stress-test both hypotheses against breach rate and throughput data simultaneously.
+* **Columns & Coverage:** Isolate `Dispute_Type` and `Processing_Hub` against the core performance metrics (`Actual_Processing_Days` and `SLA_Status`).
+
+---
+
+### Insights Log
+
+| SQL Query Focus | Metric & Dimension | The Finding | Relevant Stakeholder | Domain Context (Why it matters) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Aggregates** (SLA Breaches) | `Breach_Rate_Pct` by `Dispute_Type` | **Merchant Disputes are the sole crisis.** They fail SLAs at an 83.3% rate, while Identity Theft and Fraud sit near 0%. | Head of Compliance (Marcus) | Validates that customer complaints are spiking, but disproves the theory that *all* teams are running on empty. The crisis is localized. |
+| **Notable Segments** (YoY Degradation) | `Avg_Days` YoY by `Processing_Hub` | **The 23% surge is isolated.** Average handling times in Manila and London jumped from 39.3 days (2024) to 48.7 days (2025). | COO (Victoria) | Mathematically validates the COO's observation of a 23.9% degradation, pinpointing exactly where the operational friction is occurring. |
+| **Capacity Analysis** (True Velocity) | `Total_Volume` / `Agent_Count` by `Hub` | **New York has massive throughput superiority.** NY handles ~22,000 cases per agent (0% breach) vs Manila's ~14,000 cases per agent (47% breach). | COO (Victoria) | Proves that cross-training is not just a theory, but a mathematical certainty. NY agents process 50% more volume in a fraction of the time, proving no net-new headcount is required. |
