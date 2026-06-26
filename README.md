@@ -1,8 +1,6 @@
 # Prescott & Vance Financial: Operations Capacity & Throughput Optimizer
 
-👉 **[View Live Interactive Tableau Dashboard](INSERT_YOUR_TABLEAU_PUBLIC_LINK_HERE)**
-
-![Dashboard Screenshot](pv_dashboard_final.png)
+![Dashboard Screenshot](pv_dashboard.png)
 *Merchant Disputes breach SLAs at 83.35% — but New York processes 50% more volume per agent at 0% breach. The fix is reallocation, not headcount.*
 
 👉 📄 **[View Data Quality & SQL Insights Audit](Data_Audit.md)**
